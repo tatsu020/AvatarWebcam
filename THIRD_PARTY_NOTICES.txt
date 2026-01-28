@@ -1,0 +1,68 @@
+Third-Party Notices
+
+This product bundles or uses the following third-party software:
+
+- Python
+  License: PSF License Version 2
+  License text: LICENSES/PSF-LICENSE-Python.txt
+  Source: https://www.python.org/
+
+- PySide6 (Qt for Python)
+  License: GPL-2.0 (chosen option)
+  License text: LICENSES/GPL-2.0.txt
+  Source: https://www.pyside.org/
+
+- shiboken6 (Qt for Python bindings generator runtime)
+  License: GPL-2.0 (chosen option, same as PySide6)
+  License text: LICENSES/GPL-2.0.txt
+  Source: https://www.pyside.org/
+
+- pyvirtualcam
+  License: GPL-2.0
+  License text: LICENSES/GPL-2.0.txt
+  Source: https://github.com/letmaik/pyvirtualcam
+
+- opencv-python (Python wheels)
+  License: MIT (wrapper)
+  License text: LICENSES/opencv-python-LICENSE.txt
+  Third-party notices: LICENSES/opencv-python-LICENSE-3RD-PARTY.txt
+  Source: https://pypi.org/project/opencv-python/
+
+- OpenCV (library, via opencv-python)
+  License: BSD-3-Clause
+  Third-party notices: LICENSES/opencv-python-LICENSE-3RD-PARTY.txt
+  Source: https://opencv.org/
+
+- SpoutGL (Python bindings)
+  License: BSD-3-Clause
+  License text: LICENSES/BSD-3-Clause-SpoutGL.txt
+  Source: https://pypi.org/project/SpoutGL/
+
+- Spout2 (DirectX texture sharing library)
+  License: BSD-2-Clause
+  License text: LICENSES/BSD-2-Clause-Spout2.txt
+  Source: https://github.com/leadedge/Spout2
+
+- PyOpenGL
+  License: See LICENSES/PyOpenGL-LICENSE.txt
+  Additional notice: LICENSES/PyOpenGL-gle-COPYING.txt
+  Source: https://pypi.org/project/PyOpenGL/
+
+- glfw (Python bindings)
+  License: MIT
+  License text: LICENSES/MIT-glfw.txt
+  Source: https://pypi.org/project/glfw/
+
+- GLFW (native library)
+  License: Zlib
+  License text: LICENSES/Zlib-glfw.txt
+  Source: https://www.glfw.org/
+
+- NumPy
+  License: BSD-3-Clause
+  License text: LICENSES/BSD-3-Clause-numpy.txt
+  Source: https://numpy.org/
+
+- OpenCL headers (via OpenCV)
+  License text: LICENSES/OpenCL-LICENSE.txt
+  Source: https://www.khronos.org/opencl/
