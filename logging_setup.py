@@ -1,9 +1,10 @@
 import logging
 import os
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-APP_NAME = "AvatarWebcam"
+APP_NAME = "AvatarWebCam"
 LOG_FILENAME = "vrcambridge.log"
 DEFAULT_LEVEL = logging.INFO
 MAX_BYTES = 512 * 1024
@@ -11,10 +12,15 @@ BACKUP_COUNT = 3
 
 
 def _get_log_dir() -> Path:
-    base_dir = os.getenv("LOCALAPPDATA") or os.getenv("APPDATA")
-    if base_dir:
-        return Path(base_dir) / APP_NAME / "logs"
-    return Path.home() / "AppData" / "Local" / APP_NAME / "logs"
+    # 実行ファイル（.exe）と同じ階層、またはスクリプトのある階層の logs フォルダを使用する
+    if getattr(sys, "frozen", False) or hasattr(sys, "frozen") or "__compiled__" in globals():
+        # exe 実行時
+        base_dir = Path(sys.executable).parent
+    else:
+        # python main.py 実行時
+        base_dir = Path(__file__).parent
+    
+    return base_dir / "logs"
 
 
 def _parse_level(value: str | None) -> int:

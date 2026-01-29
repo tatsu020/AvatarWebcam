@@ -1,5 +1,5 @@
 """
-AvatarWebcam - GUI
+AvatarWebCam - GUI
 PySide6を使用したユーザーインターフェース (Modern Dark Design)
 """
 
@@ -26,6 +26,8 @@ from PySide6.QtCore import (
     QAbstractNativeEventFilter,
     QCoreApplication,
     QSharedMemory,
+    QObject,
+    Signal,
 )
 from PySide6.QtGui import (
     QFont,
@@ -287,13 +289,18 @@ class _WindowsShutdownFilter(QAbstractNativeEventFilter):
         return False, 0
 
 
-class AvatarWebcamApp(QWidget):
-    """AvatarWebcam Main Window"""
+# Bridge State to UI signal bridge
+class BridgeSignals(QObject):
+    state_received = Signal(BridgeState)
+
+
+class AvatarWebCamApp(QWidget):
+    """AvatarWebCam Main Window"""
 
     PREVIEW_SIZE = (384, 216)  # 16:9, slightly more compact to fit 720p screens
     AUTOSTART_ARG = "--autostart"
     RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-    RUN_VALUE_NAME = "AvatarWebcam"
+    RUN_VALUE_NAME = "AvatarWebCam"
     RESOLUTION_CHOICES = [
         ("480p", "480p"),
         ("720p", "720p"),
@@ -302,24 +309,41 @@ class AvatarWebcamApp(QWidget):
         ("2160p (4K)", "2160p"),
         ("VRCカメラと同じ", "source"),
     ]
+    FPS_CHOICES = [
+        ("30 FPS", 30),
+        ("60 FPS", 60),
+    ]
 
     def __init__(self):
         super().__init__()
 
         self.setObjectName("root")
-        self.setWindowTitle("AvatarWebcam")
+        self.setWindowTitle("AvatarWebCam")
         self.resize(480, 620) # More compact window
         self.setWindowIcon(self._build_app_icon())
 
         # Logic State
-        self._state_queue: Queue[BridgeState] = Queue()
+        self._signals = BridgeSignals()
+        self._signals.state_received.connect(self._apply_state)
+        
         self._bridge = SpoutBridge(state_callback=self._on_bridge_state)
         self._preview_pixmap: Optional[QPixmap] = None
         
         # Settings
         settings = self._load_settings()
         self._auto_start_enabled = bool(settings.get("auto_start_enabled", True))
-        self._windows_autostart_enabled = self._is_windows_autostart_enabled()
+        
+        # Windows Startup Sync (Handles folder moves)
+        # Prioritize setting in settings.json as the intent.
+        if "windows_autostart_enabled" in settings:
+            self._windows_autostart_enabled = bool(settings.get("windows_autostart_enabled", False))
+        else:
+            # Legacy/Initial: check registry
+            self._windows_autostart_enabled = self._is_windows_autostart_enabled()
+        
+        # If enabled, force update registry to current executable path
+        if self._windows_autostart_enabled:
+            self._set_windows_autostart(True)
         legacy_start_in_tray = bool(settings.get("start_in_tray", False))
         self._start_in_tray_on_launch_enabled = bool(
             settings.get("start_in_tray_on_launch", legacy_start_in_tray)
@@ -330,6 +354,10 @@ class AvatarWebcamApp(QWidget):
         self._resolution_value = settings.get("resolution", "source")
         if self._resolution_value not in [v for _, v in self.RESOLUTION_CHOICES]:
             self._resolution_value = "source"
+        self._fps_value = int(settings.get("fps", 30))
+        if self._fps_value not in [v for _, v in self.FPS_CHOICES]:
+            self._fps_value = 30
+        self._preview_enabled = bool(settings.get("preview_enabled", True))
 
         self._monitor_interval_idle_ms = 60000
         self._monitor_interval_active_ms = 10000
@@ -342,26 +370,25 @@ class AvatarWebcamApp(QWidget):
         self._allow_exit = False
         self._shutdown_requested = False
         self._native_event_filter: Optional[QAbstractNativeEventFilter] = None
-        self._state_timer_interval_running_ms = 100
+        self._state_timer_interval_running_ms = 16
         self._state_timer_interval_idle_visible_ms = 250
         self._state_timer_interval_idle_hidden_ms = 500
         self._vrchat_running_cache: Optional[bool] = None
         self._vrchat_last_check = 0.0
         self._vrchat_cache_ttl_idle_s = 30.0
         self._vrchat_cache_ttl_active_s = 10.0
+        self._manual_stop = False
 
         # Build UI
         self._build_ui()
+        self._update_preview_toggle_icon()
         self._apply_settings_to_controls()
         self._refresh_sources()
         self._update_auto_controls()
         self._update_startup_controls()
 
         # Timers
-        self._state_timer = QTimer(self)
-        self._state_timer.timeout.connect(self._update_state)
-        self._update_state_timer_interval()
-        self._state_timer.start()
+        # 状態監視用のタイマーは不要になったため削除（シグナル方式へ移行）
 
         # Startup Logic
         self._install_shutdown_handler()
@@ -371,11 +398,11 @@ class AvatarWebcamApp(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._bridge.set_preview_required(self._preview_enabled)
         if self._start_hidden_in_tray:
             self._start_hidden_in_tray = False
             QTimer.singleShot(0, self._hide_to_tray)
             return
-        self._update_state_timer_interval()
 
     def closeEvent(self, event):
         if self._shutdown_requested:
@@ -419,7 +446,7 @@ class AvatarWebcamApp(QWidget):
         title_layout.setContentsMargins(0,0,0,0)
         title_layout.setSpacing(2)
         
-        title = QLabel("AvatarWebcam")
+        title = QLabel("AvatarWebCam")
         title.setObjectName("headerTitle")
         subtitle = QLabel("Spoutカメラ出力を仮想カメラへ")
         subtitle.setObjectName("headerSubtitle")
@@ -460,9 +487,19 @@ class AvatarWebcamApp(QWidget):
         preview_layout.setContentsMargins(0,0,0,0)
         preview_layout.setSpacing(8)
         
+        preview_header = QHBoxLayout()
         lbl_preview = QLabel("プレビュー")
         lbl_preview.setObjectName("sectionTitle")
-        preview_layout.addWidget(lbl_preview)
+        
+        self._preview_toggle_btn = QPushButton()
+        self._preview_toggle_btn.setObjectName("iconButton")
+        self._preview_toggle_btn.setToolTip("プレビュー表示/非表示")
+        self._preview_toggle_btn.clicked.connect(self._toggle_preview)
+        
+        preview_header.addWidget(lbl_preview)
+        preview_header.addStretch()
+        preview_header.addWidget(self._preview_toggle_btn)
+        preview_layout.addLayout(preview_header)
 
         self._preview_label = QLabel("信号なし")
         self._preview_label.setObjectName("previewCanvas")
@@ -530,6 +567,8 @@ class AvatarWebcamApp(QWidget):
         # Resolution
         res_row = QHBoxLayout()
         res_row.setSpacing(10)
+        
+        # Resolution
         res_label = QLabel("解像度:")
         res_label.setStyleSheet("color: #a6adc8;")
         res_row.addWidget(res_label)
@@ -538,8 +577,23 @@ class AvatarWebcamApp(QWidget):
         for label, value in self.RESOLUTION_CHOICES:
             self._resolution_combo.addItem(label, value)
         self._resolution_combo.currentIndexChanged.connect(self._on_resolution_change)
-        self._resolution_combo.setMinimumWidth(160)
+        self._resolution_combo.setMinimumWidth(140)
         res_row.addWidget(self._resolution_combo)
+
+        res_row.addSpacing(10)
+
+        # FPS
+        fps_label = QLabel("FPS:")
+        fps_label.setStyleSheet("color: #a6adc8;")
+        res_row.addWidget(fps_label)
+
+        self._fps_combo = QComboBox()
+        for label, value in self.FPS_CHOICES:
+            self._fps_combo.addItem(label, value)
+        self._fps_combo.currentIndexChanged.connect(self._on_fps_change)
+        self._fps_combo.setMinimumWidth(80)
+        res_row.addWidget(self._fps_combo)
+
         res_row.addStretch()
         stg_layout.addLayout(res_row)
         
@@ -567,10 +621,7 @@ class AvatarWebcamApp(QWidget):
         
         # Footer Info
         footer = QHBoxLayout()
-        self._fps_label = QLabel("")
-        self._fps_label.setStyleSheet("color: #585b70; font-size: 11px;")
         footer.addStretch()
-        footer.addWidget(self._fps_label)
         root_layout.addLayout(footer)
 
     def _make_card(self, title: str) -> tuple[QFrame, QVBoxLayout]:
@@ -604,6 +655,13 @@ class AvatarWebcamApp(QWidget):
                 break
         self._resolution_combo.blockSignals(False)
 
+        self._fps_combo.blockSignals(True)
+        for i in range(self._fps_combo.count()):
+            if self._fps_combo.itemData(i) == self._fps_value:
+                self._fps_combo.setCurrentIndex(i)
+                break
+        self._fps_combo.blockSignals(False)
+
     # --- Actions ---
     def _toggle_bridge(self):
         if self._bridge.is_running():
@@ -612,6 +670,7 @@ class AvatarWebcamApp(QWidget):
             self._start_bridge()
 
     def _start_bridge(self):
+        self._manual_stop = False
         source = self._source_combo.currentText().strip()
         # "Auto Detect" -> "自動検出"
         if source == "" or "自動検出" in source or "Auto Detect" in source or "VRChat" in source:
@@ -620,10 +679,13 @@ class AvatarWebcamApp(QWidget):
             self._bridge.set_target_source(source)
 
         self._bridge.set_resolution(self._resolution_value)
+        self._bridge.set_fps(self._fps_value)
         self._set_running_ui(True)
         self._bridge.start()
 
-    def _stop_bridge(self):
+    def _stop_bridge(self, manual=True):
+        if manual:
+            self._manual_stop = True
         self._bridge.stop()
         self._set_running_ui(False)
         self._clear_preview()
@@ -648,32 +710,64 @@ class AvatarWebcamApp(QWidget):
         # Reflow styles
         self._start_btn.style().unpolish(self._start_btn)
         self._start_btn.style().polish(self._start_btn)
-        self._update_state_timer_interval()
+        if not running and not self._preview_enabled:
+             self._clear_preview()
     
-    def _update_state_timer_interval(self):
-        if not hasattr(self, "_state_timer"):
-            return
-        if self._bridge.is_running():
-            interval = self._state_timer_interval_running_ms
-        elif self.isVisible():
-            interval = self._state_timer_interval_idle_visible_ms
+    def _toggle_preview(self):
+        self._preview_enabled = not self._preview_enabled
+        self._bridge.set_preview_required(self._preview_enabled)
+        self._update_preview_toggle_icon()
+        if not self._preview_enabled:
+            self._clear_preview()
+        self._save_settings()
+
+    def _update_preview_toggle_icon(self):
+        # Minimalist UI-style Eye icon
+        size = 28
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        color = QColor("#6c6f85") # Standard icon gray
+        painter.setPen(QPen(color, 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        
+        cx, cy = size // 2, size // 2
+        
+        # Simple almond shape using two ellipses or just a basic flat eye
+        # Body
+        painter.drawEllipse(cx - 10, cy - 6, 20, 12)
+        
+        if self._preview_enabled:
+            # Simple pupil
+            painter.setBrush(color)
+            painter.drawEllipse(cx - 3, cy - 3, 6, 6)
         else:
-            interval = self._state_timer_interval_idle_hidden_ms
-        if self._state_timer.interval() != interval:
-            self._state_timer.setInterval(interval)
+            # Pupil (hollow or simple)
+            painter.drawEllipse(cx - 2, cy - 2, 4, 4)
+            # Slash
+            painter.setPen(QPen(color, 2))
+            painter.drawLine(cx - 9, cy - 7, cx + 9, cy + 7)
+            
+        painter.end()
+        self._preview_toggle_btn.setIcon(QIcon(pixmap))
+        self._preview_toggle_btn.setIconSize(QSize(28, 28))
+        
+        if not self._preview_enabled:
+            self._preview_label.setText("プレビュー非表示中")
+        elif not self._bridge.is_running():
+            self._preview_label.setText("信号なし")
 
     def _on_bridge_state(self, state: BridgeState):
-        self._state_queue.put(state)
+        self._signals.state_received.emit(state)
 
-    def _update_state(self):
-        try:
-            while True:
-                state = self._state_queue.get_nowait()
-                self._apply_state(state)
-        except Empty:
-            pass
 
     def _apply_state(self, state: BridgeState):
+        if state.status == BridgeStatus.STOPPED:
+            self._set_running_ui(False)
+            self._clear_preview()
+            return
+            
         self._status_text.setText(state.message)
 
         # Colors from palette (Latte)
@@ -687,26 +781,25 @@ class AvatarWebcamApp(QWidget):
         self._status_badge.set_color(color)
         self._status_text.setStyleSheet(f"color: {color}; font-weight: 600;")
 
-        if state.fps > 0:
-            self._fps_label.setText(f"FPS: {state.fps:.1f}")
-        else:
-             self._fps_label.setText("")
+        # No FPS label update
+        pass
 
-        if state.frame is not None:
+        if state.frame is not None and self._preview_enabled and self.isVisible():
             self._update_preview(state.frame)
         
         if state.status == BridgeStatus.STOPPED:
-            self._set_running_ui(False)
             self._clear_preview()
 
     def _update_preview(self, frame: np.ndarray):
         try:
-            if not frame.flags["C_CONTIGUOUS"]:
-                frame = np.ascontiguousarray(frame)
+            # ブリッジ側で縮小済み（384x216）なので、描画負荷は非常に低い
             height, width, _ = frame.shape
-            image = QImage(frame.data, width, height, 3 * width, QImage.Format_RGB888).copy()
+            
+            # プレビューのみ鏡像にする
+            image = QImage(frame.data, width, height, 3 * width, QImage.Format_RGB888).mirrored(True, False)
 
             target_w, target_h = self.PREVIEW_SIZE
+            # すでにサイズはほぼ合致しているが、微調整のために高品質縮小を維持
             scaled = image.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             
             # Draw rounded frame
@@ -738,7 +831,10 @@ class AvatarWebcamApp(QWidget):
 
     def _clear_preview(self):
         self._preview_label.setPixmap(QPixmap())
-        self._preview_label.setText("信号なし")
+        if not self._preview_enabled:
+            self._preview_label.setText("プレビュー非表示中")
+        else:
+            self._preview_label.setText("信号なし")
         self._preview_pixmap = None
 
     def _refresh_sources(self):
@@ -762,10 +858,15 @@ class AvatarWebcamApp(QWidget):
 
     # --- Settings Logic (Same as before) ---
     def _settings_path(self) -> Path:
-        appdata = os.getenv("APPDATA")
-        if appdata:
-            return Path(appdata) / "AvatarWebcam" / "settings.json"
-        return Path.home() / "AppData" / "Roaming" / "AvatarWebcam" / "settings.json"
+        # 実行ファイル（.exe）と同じ階層、またはスクリプトのある階層の settings.json を使用する
+        if getattr(sys, "frozen", False) or hasattr(sys, "frozen") or "__compiled__" in globals():
+            # exe 実行時
+            base_dir = Path(sys.executable).parent
+        else:
+            # python main.py 実行時
+            base_dir = Path(__file__).parent
+        
+        return base_dir / "settings.json"
 
     def _load_settings(self) -> dict:
         path = self._settings_path()
@@ -787,6 +888,8 @@ class AvatarWebcamApp(QWidget):
                 "close_to_tray": self._close_to_tray_enabled,
                 "start_in_tray": self._start_in_tray_on_launch_enabled or self._close_to_tray_enabled,
                 "resolution": self._resolution_value,
+                "fps": self._fps_value,
+                "preview_enabled": self._preview_enabled,
             }
             path.write_text(json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8")
         except Exception as e:
@@ -849,6 +952,10 @@ class AvatarWebcamApp(QWidget):
     def _on_resolution_change(self):
         self._resolution_value = self._resolution_combo.currentData()
         self._save_settings()
+
+    def _on_fps_change(self):
+        self._fps_value = self._fps_combo.currentData()
+        self._save_settings()
         # If running, we might want to restart bridge or just let it apply next time?
         # Current logic doesn't dynamic update resolution while running, which is fine.
 
@@ -873,11 +980,12 @@ class AvatarWebcamApp(QWidget):
         interval = self._monitor_interval_active_ms if vrc_running else self._monitor_interval_idle_ms
         
         if not vrc_running:
+            self._manual_stop = False # Reset flag when VRChat is closed
             if self._auto_monitor_timer:
                 self._auto_monitor_timer.start(interval)
             return
 
-        if not self._bridge.is_running():
+        if not self._bridge.is_running() and not self._manual_stop:
             sources = []
             try:
                 sources = self._bridge.get_sender_list()
@@ -923,10 +1031,14 @@ class AvatarWebcamApp(QWidget):
         self._close_to_tray_checkbox.setEnabled(True)
 
     def _autostart_command(self) -> str:
+        argv0 = Path(sys.argv[0]).resolve()
+        if argv0.suffix.lower() == ".exe" and argv0.exists():
+            return f'"{argv0}" {self.AUTOSTART_ARG}'
+
         exe_path = Path(sys.executable).resolve()
         # If running as python script
         if exe_path.name.lower().startswith("python"):
-            script_path = Path(sys.argv[0]).resolve().parent / "main.py"
+            script_path = Path(__file__).resolve().parent / "main.py"
             return f'"{exe_path}" "{script_path}" {self.AUTOSTART_ARG}'
         # If frozen exe
         return f'"{exe_path}" {self.AUTOSTART_ARG}'
@@ -937,9 +1049,27 @@ class AvatarWebcamApp(QWidget):
             import winreg
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.RUN_KEY, 0, winreg.KEY_READ) as key:
                 value, _ = winreg.QueryValueEx(key, self.RUN_VALUE_NAME)
-            return bool(value)
+            if not value:
+                return False
+            return self._extract_autostart_exe(value) is not None
         except:
             return False
+
+    def _extract_autostart_exe(self, value: str) -> Optional[Path]:
+        value = (value or "").strip()
+        if not value:
+            return None
+        if value.startswith('"'):
+            end_quote = value.find('"', 1)
+            if end_quote == -1:
+                return None
+            exe_str = value[1:end_quote]
+        else:
+            exe_str = value.split(" ", 1)[0]
+        exe_path = Path(exe_str)
+        if exe_path.exists():
+            return exe_path
+        return None
 
     def _set_windows_autostart(self, enabled: bool) -> bool:
         if os.name != "nt": return False
@@ -1044,6 +1174,8 @@ class AvatarWebcamApp(QWidget):
 
     def _hide_to_tray(self):
         self.hide()
+        self._bridge.set_preview_required(False) # Inform bridge to stop generating frames
+        self._clear_preview() # Stop preview processing
         if not self._tray_icon:
             self._start_tray_icon()
         
@@ -1054,14 +1186,12 @@ class AvatarWebcamApp(QWidget):
                 QSystemTrayIcon.Information,
                 2000
             )
-        self._update_state_timer_interval()
 
     def _restore_window(self):
         self.show()
         self.setWindowOpacity(1.0)
         self.activateWindow()
         self._has_shown = True
-        self._update_state_timer_interval()
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.Trigger:
@@ -1081,7 +1211,7 @@ def run_app():
     if os.name == "nt":
         try:
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("AvatarWebcam")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("AvatarWebCam")
         except Exception:
             pass
     app = QApplication(sys.argv)
@@ -1089,13 +1219,12 @@ def run_app():
     app.setStyleSheet(APP_QSS)
 
     # Single Instance Check
-    shared_mem = QSharedMemory("AvatarWebcam_Unique_Key_2026")
+    shared_mem = QSharedMemory("AvatarWebCam_Unique_Key_2026")
     if not shared_mem.create(1):
         # Already running
         msg = QMessageBox()
-        msg.setWindowTitle("AvatarWebcam")
+        msg.setWindowTitle("AvatarWebCam")
         msg.setText("アプリは既に起動しています。")
-        msg.setInformativeText("既に起動しているインスタンスを使用してください。")
         msg.setIcon(QMessageBox.Warning)
         msg.exec()
         sys.exit(0)
@@ -1103,7 +1232,7 @@ def run_app():
     # Store shared_mem in app to keep it alive
     app._single_instance_lock = shared_mem
 
-    window = AvatarWebcamApp()
+    window = AvatarWebCamApp()
     app.setWindowIcon(window.windowIcon())
     window.show()
 
