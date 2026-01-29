@@ -1034,16 +1034,28 @@ class AvatarWebCamApp(QWidget):
         self._close_to_tray_checkbox.setEnabled(True)
 
     def _autostart_command(self) -> str:
+        # sys.executable 自体（_internal/xxx.exe）ではなく、
+        # ユーザーが目にするルートのランチャーを登録する必要がある。
+        exe_path = Path(sys.executable).resolve()
+        
+        if getattr(sys, "frozen", False) or hasattr(sys, "frozen") or "__compiled__" in globals():
+            # _internal フォルダの中にいるなら、1つ上の階層（ルート）を基準にする
+            if exe_path.parent.name.lower() == "_internal":
+                # ルートにあるランチャー（AvatarWebCam.exe）を指す
+                launcher_path = exe_path.parent.parent / "AvatarWebCam.exe"
+                if launcher_path.exists():
+                    return f'"{launcher_path}" {self.AUTOSTART_ARG}'
+            return f'"{exe_path}" {self.AUTOSTART_ARG}'
+
+        # Python スクリプトとして実行中の場合
         argv0 = Path(sys.argv[0]).resolve()
         if argv0.suffix.lower() == ".exe" and argv0.exists():
             return f'"{argv0}" {self.AUTOSTART_ARG}'
 
-        exe_path = Path(sys.executable).resolve()
-        # If running as python script
         if exe_path.name.lower().startswith("python"):
             script_path = Path(__file__).resolve().parent / "main.py"
             return f'"{exe_path}" "{script_path}" {self.AUTOSTART_ARG}'
-        # If frozen exe
+            
         return f'"{exe_path}" {self.AUTOSTART_ARG}'
 
     def _is_windows_autostart_enabled(self) -> bool:
