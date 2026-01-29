@@ -16,6 +16,9 @@ def _get_log_dir() -> Path:
     if getattr(sys, "frozen", False) or hasattr(sys, "frozen") or "__compiled__" in globals():
         # exe 実行時
         base_dir = Path(sys.executable).parent
+        # _internal フォルダの中にいるなら、1つ上の階層（ルート）を基準にする
+        if base_dir.name.lower() == "_internal":
+            base_dir = base_dir.parent
     else:
         # python main.py 実行時
         base_dir = Path(__file__).parent

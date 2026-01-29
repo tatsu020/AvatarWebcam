@@ -60,50 +60,80 @@ if defined ICON_PATH (
     echo Note: icon.ico/icon.png not found. Building without custom icon.
 )
 
+set "APP_VERSION=1.0.2.0"
+
+echo.
+echo [1/2] Building Main Application Core...
 python -m nuitka ^
     --standalone ^
     --lto=yes ^
     --windows-console-mode=disable ^
-    %ICON_OPT% ^
     --enable-plugin=pyside6 ^
     --include-data-dir=assets=assets ^
     --include-package-data=SpoutGL ^
     --company-name="AvatarWebCam" ^
-    --product-name="AvatarWebCam" ^
-    --file-version=1.0.0.0 ^
-    --product-version=1.0.0.0 ^
-    --file-description="AvatarWebCam" ^
-    --copyright="Copyright (c) 2026 tatsu020" ^
+    --product-name="AvatarWebCam Core" ^
+    --file-version=%APP_VERSION% ^
+    --product-version=%APP_VERSION% ^
     --remove-output ^
     --output-dir=%OUT_DIR% ^
-    --output-filename=AvatarWebCam.exe ^
+    --output-filename=AvatarWebCam_internal.exe ^
     --assume-yes-for-downloads ^
     main.py
 
 if %ERRORLEVEL% neq 0 (
     echo.
-    echo Build failed!
+    echo Main Core Build failed!
     pause
     exit /b 1
 )
 
 echo.
-echo Organizing output folder...
-set "FINAL_DIR=%OUT_DIR%\AvatarWebCam"
-if exist "%FINAL_DIR%" rmdir /S /Q "%FINAL_DIR%"
-mkdir "%FINAL_DIR%"
+echo [2/2] Building Premium Launcher...
+python -m nuitka ^
+    --onefile ^
+    --windows-console-mode=disable ^
+    %ICON_OPT% ^
+    --company-name="AvatarWebCam" ^
+    --product-name="AvatarWebCam" ^
+    --file-version=%APP_VERSION% ^
+    --product-version=%APP_VERSION% ^
+    --file-description="AvatarWebCam Launcher" ^
+    --copyright="Copyright (c) 2026 tatsu020" ^
+    --remove-output ^
+    --output-dir=%OUT_DIR% ^
+    --output-filename=AvatarWebCam.exe ^
+    --assume-yes-for-downloads ^
+    launcher.py
 
-REM Nuitka出力（.dist）を bin または contents というサブフォルダに移動して隠す
-REM ただし .exe は DLL と同じ場所にある必要があるため、
-REM ここでは「AvatarWebCam」フォルダの直下にすべてを置きつつ、
-REM ドキュメント類を目立たせる構成にします。
-if exist "%OUT_DIR%\AvatarWebCam.dist" (
-    xcopy /E /I /Y "%OUT_DIR%\AvatarWebCam.dist" "%FINAL_DIR%" >nul
-    rmdir /S /Q "%OUT_DIR%\AvatarWebCam.dist"
+if %ERRORLEVEL% neq 0 (
+    echo.
+    echo Launcher Build failed!
+    pause
+    exit /b 1
 )
 
 echo.
-echo Copying license and readme files to %FINAL_DIR%...
+echo Organizing Final Distribution...
+set "FINAL_DIR=%OUT_DIR%\AvatarWebCam"
+set "INTERNAL_DIR=%FINAL_DIR%\_internal"
+
+REM 既存の出力先を掃除
+if exist "%FINAL_DIR%" rmdir /S /Q "%FINAL_DIR%"
+mkdir "%FINAL_DIR%"
+
+REM 1. 本体の移動 (main.dist フォルダを _internal という名前に変えて移動)
+if exist "%OUT_DIR%\main.dist" (
+    move "%OUT_DIR%\main.dist" "%INTERNAL_DIR%" >nul
+)
+
+REM 2. ランチャーの移動
+if exist "%OUT_DIR%\AvatarWebCam.exe" (
+    move "%OUT_DIR%\AvatarWebCam.exe" "%FINAL_DIR%\AvatarWebCam.exe" >nul
+)
+
+echo.
+echo Copying Documents to Root...
 if exist "LICENSE" copy /Y "LICENSE" "%FINAL_DIR%\LICENSE" >nul
 if exist "README.txt" copy /Y "README.txt" "%FINAL_DIR%\README.txt" >nul
 if exist "README.md" copy /Y "README.md" "%FINAL_DIR%\README.md" >nul
@@ -114,9 +144,9 @@ echo.
 echo ========================================
 echo Build completed successfully!
 echo.
-echo Output location: %FINAL_DIR%
-echo - Launch: AvatarWebCam.exe
-echo - Support files are mixed in this folder for stability.
+echo Output: %FINAL_DIR%
+echo - Launch this: AvatarWebCam.exe
+echo - Everything else is in: _internal\
 echo ========================================
 echo.
 
